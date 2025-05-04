@@ -9,6 +9,16 @@ import TransactionHistory from './TransactionHistory';
 import './App.css';
 import UserManagement from './UserManagement';
 
+// Configure axios defaults
+axios.defaults.withCredentials = true;
+axios.interceptors.request.use((config) => {
+  const token = localStorage.getItem('token');
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
 function App() {
   const [user, setUser] = useState(null);
   const [message, setMessage] = useState('');
@@ -16,28 +26,82 @@ function App() {
 
   useEffect(() => {
     fetchUser();
+    
+    // Set up token refresh interval
+    const refreshInterval = setInterval(() => {
+      if (user) refreshToken();
+    }, 30 * 60 * 1000); // 30 minutes
+    
+    return () => clearInterval(refreshInterval);
   }, []);
 
   const fetchUser = async () => {
     try {
-      const { data } = await axios.get('https://stripepaymentbackend-7zq9.onrender.com/api/v1/current_user', {
-        withCredentials: true,
-      });
+      const token = localStorage.getItem('token');
+      let config = {};
+      
+      if (token) {
+        config.headers = { Authorization: `Bearer ${token}` };
+      }
+      
+      const { data } = await axios.get(
+        'https://stripepaymentbackend-7zq9.onrender.com/api/v1/current_user', 
+        config
+      );
       setUser(data);
     } catch (err) {
       console.error('Error fetching user:', err);
+      if (err.response?.status === 401) {
+        localStorage.removeItem('token');
+        try {
+          const { data } = await axios.get(
+            'https://stripepaymentbackend-7zq9.onrender.com/api/v1/current_user',
+            { withCredentials: true }
+          );
+          setUser(data);
+        } catch (sessionErr) {
+          console.error('Session auth failed:', sessionErr);
+        }
+      }
+    }
+  };
+
+  const refreshToken = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      if (token) {
+        await axios.post(
+          'https://stripepaymentbackend-7zq9.onrender.com/api/v1/refresh-token',
+          {},
+          { 
+            withCredentials: true,
+            headers: {
+              Authorization: `Bearer ${token}`
+            }
+          }
+        );
+      }
+    } catch (err) {
+      console.error('Token refresh failed:', err);
     }
   };
 
   const handleGoogleSuccess = async (credentialResponse) => {
     try {
       const { credential } = credentialResponse;
-      await axios.post(
+      const { data } = await axios.post(
         'https://stripepaymentbackend-7zq9.onrender.com/auth/google',
         { token: credential },
         { withCredentials: true }
       );
-      await fetchUser();
+      
+      if (data.token) {
+        localStorage.setItem('token', data.token);
+        setUser(data.user);
+      } else {
+        await fetchUser();
+      }
+      
       navigate('/');
       setMessage('Login successful!');
       setTimeout(() => setMessage(''), 3000);
@@ -49,7 +113,13 @@ function App() {
 
   const handleLogout = async () => {
     try {
-      await axios.get('https://stripepaymentbackend-7zq9.onrender.com/api/v1/logout', { withCredentials: true });
+      await axios.get('https://stripepaymentbackend-7zq9.onrender.com/api/v1/logout', { 
+        withCredentials: true,
+        headers: {
+          Authorization: `Bearer ${localStorage.getItem('token')}`
+        }
+      });
+      localStorage.removeItem('token');
       setUser(null);
       navigate('/');
       setMessage('Logged out successfully');
